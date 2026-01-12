@@ -38,6 +38,26 @@ game:GetService('Players').LocalPlayer.Idled:Connect(function()
     VirtualUser:ClickButton2(Vector2.new())
 end)
 
+local FarmVariant = "Level"
+
+-- Create the dropdown
+local FarmFor = MainTab:CreateDropdown({
+    Name = "What to farm for:",
+    Options = {"Level","Gold"},
+    CurrentOption = {"Level"},
+    MultipleOptions = false,
+    Flag = "FarmFor",
+    Callback = function(Options)
+        -- FIX: Handle if the UI library returns a table or a string
+        if type(Options) == "table" then
+            FarmVariant = Options[1]
+        else
+            FarmVariant = Options
+        end
+        print("[DEBUG] FarmVariant is now set to:", FarmVariant)
+    end,
+})
+
 -- Create Main Toggle
 local MainToggle = MainTab:CreateToggle({
     Name = "Main Account Mode",
@@ -76,46 +96,6 @@ local AltToggle = MainTab:CreateToggle({
     end,
 })
 
-MainTab:CreateButton({
-    Name = "Lower Quality",
-    Callback = function()
-        local Lighting = game:GetService("Lighting")
-        local Terrain = workspace:FindFirstChildOfClass("Terrain")
-        
-        settings().Rendering.QualityLevel = 1
-        Lighting.GlobalShadows = false
-        Lighting.FogEnd = 9e9
-        
-        if Terrain then
-            Terrain.WaterWaveSize = 0
-            Terrain.WaterWaveSpeed = 0
-            Terrain.WaterReflectance = 0
-            Terrain.WaterTransparency = 0
-        end
-
-        task.spawn(function()
-            for _, v in ipairs(workspace:GetDescendants()) do
-                if v:IsA("BasePart") then
-                    v.Material = Enum.Material.SmoothPlastic
-                    v.Reflectance = 0
-                elseif v:IsA("Decal") or v:IsA("Texture") then
-                    v.Transparency = 1
-                elseif v:IsA("ParticleEmitter") or v:IsA("Trail") then
-                    v.Enabled = false
-                elseif v:IsA("PostEffect") then
-                    v.Enabled = false
-                end
-            end
-            
-            Rayfield:Notify({
-                Title = "Quality Lowered",
-                Content = "Textures and effects have been optimized.",
-                Duration = 3
-            })
-        end)
-    end,
-})
-
 -- Status Section
 local StatusSection = MainTab:CreateSection("Status")
 local StatusLabel = MainTab:CreateLabel("Status: Disabled")
@@ -123,8 +103,9 @@ local StatusLabel = MainTab:CreateLabel("Status: Disabled")
 -- Get services
 local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
+local VirtualInputManager = game:GetService("VirtualInputManager")
 
--- Import the firesignal function from the working example
+-- Import the firesignal function
 local function Firesignal(signal, ...)
     for _, connection in pairs(getconnections(signal)) do
         connection:Fire(...)
@@ -135,29 +116,27 @@ end
 local function PressButton(button)
     if not button then return false end
     
-    -- Try all possible methods
     if button.Activated then
         Firesignal(button.Activated, LocalPlayer)
-        print("[CLICK] Activated:", button.Name)
         return true
     elseif button.MouseButton1Click then
         Firesignal(button.MouseButton1Click)
-        print("[CLICK] MouseButton1Click:", button.Name)
         return true
     elseif button:IsA("TextButton") or button:IsA("ImageButton") then
         button:Fire("Click")
-        print("[CLICK] Fire Click:", button.Name)
         return true
     end
-    
     return false
 end
+
+local GoldCharacterName = "None"
+local GoldCharacter = nil
+local AnchorExpiry = 0
 
 -- CONSTANT CHECK LOOP
 spawn(function()
     while true do
         if FarmEnabled then
-            -- Get current PlayerGui
             local PlayerGui = LocalPlayer.PlayerGui
             
             -- PHASE 1: Check for Rematch Button
@@ -166,7 +145,6 @@ spawn(function()
                 local TextButton = Rematch:FindFirstChild("TextButton")
                 if TextButton and TextButton.Visible then
                     StatusLabel:Set("Phase: Rematch")
-                    print("[PHASE] Rematch detected")
                     PressButton(TextButton)
                     wait(0.5)
                 end
@@ -176,9 +154,6 @@ spawn(function()
             local MapBan = PlayerGui:FindFirstChild("MapBan")
             if MapBan and MapBan.Frame.Visible then
                 StatusLabel:Set("Phase: Map Ban")
-                print("[PHASE] Map Ban detected")
-                
-                -- Try to find and click map buttons
                 local MapsFrame = MapBan:FindFirstChild("Frame")
                 if MapsFrame then
                     MapsFrame = MapsFrame:FindFirstChild("Maps")
@@ -187,10 +162,8 @@ spawn(function()
                         local Map2 = MapsFrame:FindFirstChild("Map2")
                         local Map3 = MapsFrame:FindFirstChild("Map3")
                         
-                        PressButton(Map1)
-                        wait(0.4)
-                        PressButton(Map2)
-                        wait(0.4)
+                        PressButton(Map1); wait(0.4)
+                        PressButton(Map2); wait(0.4)
                         PressButton(Map3)
                     end
                 end
@@ -201,28 +174,46 @@ spawn(function()
             local BanChooser = PlayerGui:FindFirstChild("BanChooser")
             if BanChooser and BanChooser.CharacterSelect.Visible then
                 StatusLabel:Set("Phase: Character Ban")
-                print("[PHASE] Character Ban detected")
-                
                 local CharacterSelect = BanChooser:FindFirstChild("CharacterSelect")
                 if CharacterSelect then
                     local PassBan = CharacterSelect:FindFirstChild("Pass Ban")
-                    if PassBan then
-                        PressButton(PassBan)
-                    else
-                        print("[ERROR] Pass Ban button not found")
+                    if PassBan then PressButton(PassBan) end
+                end
+                wait(0.5)
+            end
+
+            -- PHASE 4: Check for Character Choosing
+            local HUD = PlayerGui:FindFirstChild("HUD")
+            local cs = HUD and HUD:FindFirstChild("CharacterSelect")
+
+            if cs and cs.Visible then
+                StatusLabel:Set("Phase: Character Selection")
+                if GoldCharacterName ~= nil and GoldCharacterName ~= "None" then
+                    local chars = cs:FindFirstChild("Characters")
+                    if chars then
+                        local btn = chars:FindFirstChild(GoldCharacterName, true)
+                        if btn and btn:IsA("ImageButton") then
+                            PressButton(btn)
+                            wait(0.2)
+                            local info = cs:FindFirstChild("InfoBox")
+                            local play = info and info:FindFirstChild("Play")
+                            if play then PressButton(play) end
+                        end
                     end
                 end
                 wait(0.5)
             end
 
-            -- PHASE 4: Check for Fight Phase (Health UI visible)
-            if game:GetService("Players").LocalPlayer.PlayerGui:FindFirstChild("HUD") then
-                local HealthUI = game:GetService("Players").LocalPlayer.PlayerGui:FindFirstChild("HUD"):FindFirstChild("Health")
-                if HealthUI and HealthUI.Visible then
-                    StatusLabel:Set("Phase: Fighting")
-                    
+            -- PHASE 5: Check for Fight Phase
+            local HealthUI = HUD and HUD:FindFirstChild("Health")
+
+            if HUD and HealthUI and HealthUI.Visible then
+
+                -- ==============================
+                -- VARIANT: LEVEL FARM
+                -- ==============================
+                if FarmVariant == "Level" then
                     if FarmMode == "Alt" then
-                        -- Alt mode: Kill self
                         local character = LocalPlayer.Character
                         if character then
                             local humanoid = character:FindFirstChild("Humanoid")
@@ -232,37 +223,220 @@ spawn(function()
                             end
                         end
                     else
-                        -- Main mode: Just fight normally
-                        print("[MAIN] In fight phase")
-                        StatusLabel:Set("Phase: Waiting")
+                        StatusLabel:Set("Phase: Waiting (Level Farm)")
                     end
-                    wait(0.5)
+                
+                -- ==============================
+                -- VARIANT: GOLD FARM
+                -- ==============================
+                elseif FarmVariant == "Gold" then
+                    -- ==============================
+                    -- GOLD FARM: ALT MODE
+                    -- ==============================
+                    if FarmMode == "Alt" then
+                        local character = LocalPlayer.Character
+                        local humanoid = character and character:FindFirstChild("Humanoid")
+                        local hrp = character and character:FindFirstChild("HumanoidRootPart")
+
+                        if hrp and humanoid and humanoid.Health > 0 then
+                            -- Update the expiry time to 1 second from "now"
+                            AnchorExpiry = tick() + 1
+                            
+                            if not hrp.Anchored then
+                                hrp.Anchored = true
+                                StatusLabel:Set("Phase: Anchored (Alt)")
+                                print("[ALT] Character Anchored")
+
+                                -- Start a separate one-time check to release it
+                                task.spawn(function()
+                                    while hrp and hrp.Parent and hrp.Anchored do
+                                        -- If the current time has passed our expiry, unanchor
+                                        if tick() > AnchorExpiry then
+                                            hrp.Anchored = false
+                                            print("[ALT] Timer expired, unanchored.")
+                                            break
+                                        end
+                                        task.wait(0.1)
+                                    end
+                                end)
+                            end
+                        end
+
+                    -- ==============================
+                    -- GOLD FARM: MAIN MODE
+                    -- ==============================
+                    else
+                        local Leaderboard = PlayerGui:FindFirstChild("CustomLeaderboard")
+                        
+                        if Leaderboard and Leaderboard:FindFirstChild("Main") then
+                            local MainFrame = Leaderboard.Main
+                            local BlueTeam = MainFrame:FindFirstChild("Blue Team")
+                            local RedTeam = MainFrame:FindFirstChild("Red Team")
+                            
+                            local MyTeam = nil
+                            local EnemyTeam = nil
+                            
+                            -- 1. Identify Teams
+                            if BlueTeam and BlueTeam:FindFirstChild(LocalPlayer.Name) then
+                                MyTeam = BlueTeam
+                                EnemyTeam = RedTeam
+                            elseif RedTeam and RedTeam:FindFirstChild(LocalPlayer.Name) then
+                                MyTeam = RedTeam
+                                EnemyTeam = BlueTeam
+                            else
+                                print("[DEBUG] Could not find player name in Red or Blue team frames.")
+                            end
+
+                            -- 2. Find Enemy Target
+                            local TargetRoot = nil
+                            local TargetChar = nil
+
+                            if EnemyTeam then
+                                for _, frame in pairs(EnemyTeam:GetChildren()) do
+                                    if frame:IsA("Frame") then
+                                        local EnemyName = frame.Name
+                                        local PotentialChar = workspace.Live:FindFirstChild(EnemyName)
+                                        
+                                        if PotentialChar and PotentialChar:FindFirstChild("HumanoidRootPart") and PotentialChar:FindFirstChild("Humanoid") then
+                                            if PotentialChar.Humanoid.Health > 0 then
+                                                TargetChar = PotentialChar
+                                                TargetRoot = PotentialChar.HumanoidRootPart
+                                                break 
+                                            end
+                                        end
+                                    end
+                                end
+                            else
+                                print("[DEBUG] No Enemy Team Found")
+                            end
+
+                            -- 3. Execute Attack Logic
+                            if TargetRoot and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+                                local MyRoot = LocalPlayer.Character.HumanoidRootPart
+                                local Distance = (MyRoot.Position - TargetRoot.Position).Magnitude
+
+                                if Distance <= 550 then
+                                    StatusLabel:Set("Attacking: " .. TargetChar.Name)
+                                    
+                                    -- Teleport (Lerp) behind the enemy
+                                    MyRoot.CFrame = TargetRoot.CFrame * CFrame.new(0, 0, 3) 
+                                    MyRoot.CFrame = CFrame.new(MyRoot.Position, TargetRoot.Position)
+                                    
+                                    -- Hold M1 (Attack)
+                                    VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true, game, 1)
+                                else
+                                    StatusLabel:Set("Target too far (>550)")
+                                    -- Release Inputs
+                                    VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 1)
+                                end
+                            else
+                                StatusLabel:Set("Searching for targets...")
+                                -- Release Inputs
+                                VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 1)
+                            end
+                        else
+                            print("[DEBUG] CustomLeaderboard not found or structure changed")
+                        end
+                    end
+                else
+                    print("[DEBUG] FarmVariant is unknown: ", tostring(FarmVariant))
                 end
+                wait(0.1) 
             end
-            
-            -- PHASE 6: Idle or unknown
+
             StatusLabel:Set("Mode: " .. FarmMode .. " | Checking...")
-            
         else
-            -- Farm disabled
             StatusLabel:Set("Status: Disabled")
         end
-        
-        -- Fast loop - check every 0.3 seconds
-        wait(0.3)
+        wait(0.1)
     end
 end)
 
--- Initialize
-Rayfield:LoadConfiguration()
 
--- Notify user
-Rayfield:Notify({
-    Title = "ABA Auto Farm Loaded",
-    Content = "Script loaded successfully!",
-    Duration = 5,
-    Image = 4483362458,
+local GoldFarm = MainTab:CreateSection("Gold Skin Farm")
+
+local UnlockedCharacters = {} -- array of ImageButtons
+local seen = {}              -- [ImageButton] = true
+local scanning = false
+
+-- Create the dropdown first so we can refresh it later
+local CharacterDropdown = MainTab:CreateDropdown({
+	Name = "Character Selection",
+	Options = {"None"},
+	CurrentOption = {"None"},
+	MultipleOptions = false,
+	Flag = "GoldCharacter",
+	Callback = function(Options)
+		local choice = (typeof(Options) == "table" and Options[1]) or Options
+		GoldCharacterName = choice or "None"
+		print("Selected " .. tostring(GoldCharacterName) .. " to get Gold Skin!")
+	end,
 })
 
-print("[INFO] ABA Auto Farm Script Loaded")
-print("[INFO] Select a mode to start farming")
+local function refreshDropdownFromUnlocked()
+	local opts = {"None"}
+
+	for _, btn in ipairs(UnlockedCharacters) do
+		if btn and btn.Parent then
+			table.insert(opts, btn.Name)
+		end
+	end
+
+	-- Rayfield dropdown refresh
+	CharacterDropdown:Refresh(opts, true)
+end
+
+local function dumpUnlocked()
+	local names = {}
+	for _, btn in ipairs(UnlockedCharacters) do
+		if btn and btn.Parent then
+			table.insert(names, btn.Name)
+		end
+	end
+	print("Unlocked:", #names, table.concat(names, ", "))
+end
+
+local AltToggle = MainTab:CreateToggle({
+	Name = "Unlocked Character Scanner",
+	CurrentValue = false,
+	Flag = "UnlockedScanning",
+	Callback = function(Value)
+		scanning = Value
+
+		if not scanning then
+			print("Reading Disabled")
+			return
+		end
+
+		print("Reading Enabled")
+
+		task.spawn(function()
+			while scanning do
+				local addedSomething = false
+
+				local HUD = Players.LocalPlayer.PlayerGui:FindFirstChild("HUD")
+				local CharacterSelect = HUD and HUD:FindFirstChild("CharacterSelect")
+				local Characters = CharacterSelect and CharacterSelect:FindFirstChild("Characters")
+
+				if Characters then
+					for _, v in ipairs(Characters:GetDescendants()) do
+						if v:IsA("ImageButton") and v.ImageColor3 == Color3.fromRGB(255, 255, 255) then
+							if not seen[v] then
+								seen[v] = true
+								table.insert(UnlockedCharacters, v)
+								addedSomething = true
+							end
+						end
+					end
+				end
+
+				if addedSomething then
+					refreshDropdownFromUnlocked()
+					dumpUnlocked()
+				end
+
+				task.wait(1)
+			end
+		end)
+	end,
+})
