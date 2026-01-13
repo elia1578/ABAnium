@@ -39,6 +39,102 @@ game:GetService('Players').LocalPlayer.Idled:Connect(function()
 end)
 
 local FarmVariant = "Level"
+local HttpService = game:GetService("HttpService")
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+
+-- Data tracking variables
+local characterData = {}
+local currentCharacter = nil
+local sessionStartTime = nil
+local lastPointsValue = 0
+local totalPointsThisSession = 0
+local isInitialized = false
+
+-- Data file path - ALWAYS includes user ID
+local DATA_FILE = "ABAniumFolder/CharacterData_" .. tostring(LocalPlayer.UserId) .. ".json"
+
+-- Function to load character data
+local function loadCharacterData()
+    if isfile(DATA_FILE) then
+        local success, data = pcall(function()
+            return HttpService:JSONDecode(readfile(DATA_FILE))
+        end)
+        if success and data then
+            characterData = data
+        end
+    end
+    characterData = characterData or {}
+end
+
+-- Function to save character data
+local function saveCharacterData()
+    pcall(function()
+        writefile(DATA_FILE, HttpService:JSONEncode(characterData))
+    end)
+end
+
+-- Function to update character tracking
+local function updateCharacterTracking(characterName, pointsToAdd, timeToAdd)
+    if not characterName or characterName == "None" then return end
+    
+    -- Find character
+    local foundChar = nil
+    for _, charData in ipairs(characterData) do
+        if charData.Name == characterName then
+            foundChar = charData
+            break
+        end
+    end
+    
+    if foundChar then
+        foundChar.Points = (foundChar.Points or 0) + math.max(0, pointsToAdd)
+        foundChar.Time = (foundChar.Time or 0) + math.max(0, timeToAdd)
+    else
+        table.insert(characterData, {
+            Name = characterName,
+            Points = math.max(0, pointsToAdd),
+            Time = math.max(0, timeToAdd)
+        })
+    end
+    
+    saveCharacterData()
+end
+
+-- Function to start tracking session
+local function startTrackingSession(characterName)
+    if FarmVariant == "Gold" and FarmMode == "Main" and characterName ~= "None" then
+        currentCharacter = characterName
+        sessionStartTime = tick()
+        totalPointsThisSession = 0
+        
+        -- Get initial points value
+        local leaderstats = LocalPlayer:FindFirstChild("leaderstats")
+        if leaderstats then
+            local pointsStat = leaderstats:FindFirstChild("Points")
+            if pointsStat then
+                lastPointsValue = pointsStat.Value
+            end
+        end
+    end
+end
+
+-- Function to stop tracking session
+local function stopTrackingSession()
+    if currentCharacter and sessionStartTime then
+        local sessionDuration = tick() - sessionStartTime
+        
+        -- Add time to character
+        if sessionDuration > 0 then
+            updateCharacterTracking(currentCharacter, 0, sessionDuration)
+        end
+        
+        currentCharacter = nil
+        sessionStartTime = nil
+        totalPointsThisSession = 0
+        lastPointsValue = 0
+    end
+end
 
 -- Create the dropdown
 local FarmFor = MainTab:CreateDropdown({
@@ -48,13 +144,17 @@ local FarmFor = MainTab:CreateDropdown({
     MultipleOptions = false,
     Flag = "FarmFor",
     Callback = function(Options)
-        -- FIX: Handle if the UI library returns a table or a string
+        local oldVariant = FarmVariant
+        
         if type(Options) == "table" then
             FarmVariant = Options[1]
         else
             FarmVariant = Options
         end
-        print("[DEBUG] FarmVariant is now set to:", FarmVariant)
+        
+        if oldVariant == "Gold" and FarmVariant ~= "Gold" then
+            stopTrackingSession()
+        end
     end,
 })
 
@@ -68,11 +168,17 @@ local MainToggle = MainTab:CreateToggle({
             setfpscap(20)
             FarmEnabled = true
             FarmMode = "Main"
-            print("[START] Main Farm Enabled")
+            
+            -- Initialize data only once
+            if not isInitialized then
+                makefolder("ABAniumFolder")
+                loadCharacterData()
+                isInitialized = true
+            end
         else
             setfpscap(200)
             FarmEnabled = false
-            print("[STOP] Main Farm Disabled")
+            stopTrackingSession()
         end
     end,
 })
@@ -87,11 +193,9 @@ local AltToggle = MainTab:CreateToggle({
             setfpscap(20)
             FarmEnabled = true
             FarmMode = "Alt"
-            print("[START] Alt Farm Enabled")
         else
             setfpscap(200)
             FarmEnabled = false
-            print("[STOP] Alt Farm Disabled")
         end
     end,
 })
@@ -99,10 +203,9 @@ local AltToggle = MainTab:CreateToggle({
 -- Status Section
 local StatusSection = MainTab:CreateSection("Status")
 local StatusLabel = MainTab:CreateLabel("Status: Disabled")
+local ProgressLabel = MainTab:CreateLabel("Progress: None")
 
 -- Get services
-local Players = game:GetService("Players")
-local LocalPlayer = Players.LocalPlayer
 local VirtualInputManager = game:GetService("VirtualInputManager")
 
 -- Import the firesignal function
@@ -130,8 +233,41 @@ local function PressButton(button)
 end
 
 local GoldCharacterName = "None"
-local GoldCharacter = nil
 local AnchorExpiry = 0
+local lastTimeUpdate = tick()
+
+-- Points and time monitoring coroutine
+spawn(function()
+    while true do
+        if FarmEnabled and FarmVariant == "Gold" and FarmMode == "Main" and currentCharacter then
+            -- Update time every 5 seconds
+            if tick() - lastTimeUpdate >= 5 then
+                local timePassed = tick() - lastTimeUpdate
+                lastTimeUpdate = tick()
+                updateCharacterTracking(currentCharacter, 0, timePassed)
+            end
+            
+            -- Update points continuously
+            local leaderstats = LocalPlayer:FindFirstChild("leaderstats")
+            if leaderstats then
+                local pointsStat = leaderstats:FindFirstChild("Points")
+                if pointsStat then
+                    local currentPoints = pointsStat.Value
+                    local pointsDiff = currentPoints - lastPointsValue
+                    
+                    -- Only add positive differences (points earned)
+                    if pointsDiff > 0 then
+                        updateCharacterTracking(currentCharacter, pointsDiff, 0)
+                        totalPointsThisSession = totalPointsThisSession + pointsDiff
+                    end
+                    
+                    lastPointsValue = currentPoints
+                end
+            end
+        end
+        wait(1)
+    end
+end)
 
 -- CONSTANT CHECK LOOP
 spawn(function()
@@ -188,6 +324,11 @@ spawn(function()
 
             if cs and cs.Visible then
                 StatusLabel:Set("Phase: Character Selection")
+                
+                if GoldCharacterName ~= "None" and currentCharacter ~= GoldCharacterName then
+                    stopTrackingSession()
+                end
+                
                 if GoldCharacterName ~= nil and GoldCharacterName ~= "None" then
                     local chars = cs:FindFirstChild("Characters")
                     if chars then
@@ -209,9 +350,6 @@ spawn(function()
 
             if HUD and HealthUI and HealthUI.Visible then
 
-                -- ==============================
-                -- VARIANT: LEVEL FARM
-                -- ==============================
                 if FarmVariant == "Level" then
                     if FarmMode == "Alt" then
                         local character = LocalPlayer.Character
@@ -219,41 +357,29 @@ spawn(function()
                             local humanoid = character:FindFirstChild("Humanoid")
                             if humanoid and humanoid.Health > 0 then
                                 humanoid.Health = 0
-                                print("[ALT] Killed self")
                             end
                         end
                     else
                         StatusLabel:Set("Phase: Waiting (Level Farm)")
                     end
                 
-                -- ==============================
-                -- VARIANT: GOLD FARM
-                -- ==============================
                 elseif FarmVariant == "Gold" then
-                    -- ==============================
-                    -- GOLD FARM: ALT MODE
-                    -- ==============================
                     if FarmMode == "Alt" then
                         local character = LocalPlayer.Character
                         local humanoid = character and character:FindFirstChild("Humanoid")
                         local hrp = character and character:FindFirstChild("HumanoidRootPart")
 
                         if hrp and humanoid and humanoid.Health > 0 then
-                            -- Update the expiry time to 1 second from "now"
                             AnchorExpiry = tick() + 1
                             
                             if not hrp.Anchored then
                                 hrp.Anchored = true
                                 StatusLabel:Set("Phase: Anchored (Alt)")
-                                print("[ALT] Character Anchored")
-
-                                -- Start a separate one-time check to release it
+                                
                                 task.spawn(function()
                                     while hrp and hrp.Parent and hrp.Anchored do
-                                        -- If the current time has passed our expiry, unanchor
                                         if tick() > AnchorExpiry then
                                             hrp.Anchored = false
-                                            print("[ALT] Timer expired, unanchored.")
                                             break
                                         end
                                         task.wait(0.1)
@@ -262,10 +388,39 @@ spawn(function()
                             end
                         end
 
-                    -- ==============================
-                    -- GOLD FARM: MAIN MODE
-                    -- ==============================
                     else
+                        -- Start tracking session if not already tracking
+                        if GoldCharacterName ~= "None" and not currentCharacter then
+                            startTrackingSession(GoldCharacterName)
+                        end
+                        
+                        -- Update progress display
+                        if currentCharacter then
+                            -- Find character data
+                            local charProgress = {Points = 0, Time = 0}
+                            for _, charData in ipairs(characterData) do
+                                if charData.Name == currentCharacter then
+                                    charProgress = charData
+                                    break
+                                end
+                            end
+                            
+                            local pointsPercent = math.min(100, math.floor((charProgress.Points / 21000) * 100))
+                            local timePercent = math.min(100, math.floor((charProgress.Time / 10800) * 100))
+                            
+                            local sessionTime = sessionStartTime and (tick() - sessionStartTime) or 0
+                            local totalHours = math.floor(charProgress.Time / 3600)
+                            local totalMinutes = math.floor((charProgress.Time % 3600) / 60)
+                            local totalSeconds = math.floor(charProgress.Time % 60)
+                            
+                            ProgressLabel:Set(string.format("%s: %d/%d pts (%d%%) | %d:%02d:%02d/%d:00:00 (%d%%)", 
+                                currentCharacter, 
+                                charProgress.Points, 21000, pointsPercent,
+                                totalHours, totalMinutes, totalSeconds, 3, timePercent))
+                        else
+                            ProgressLabel:Set("Progress: Not Tracking")
+                        end
+                        
                         local Leaderboard = PlayerGui:FindFirstChild("CustomLeaderboard")
                         
                         if Leaderboard and Leaderboard:FindFirstChild("Main") then
@@ -276,18 +431,14 @@ spawn(function()
                             local MyTeam = nil
                             local EnemyTeam = nil
                             
-                            -- 1. Identify Teams
                             if BlueTeam and BlueTeam:FindFirstChild(LocalPlayer.Name) then
                                 MyTeam = BlueTeam
                                 EnemyTeam = RedTeam
                             elseif RedTeam and RedTeam:FindFirstChild(LocalPlayer.Name) then
                                 MyTeam = RedTeam
                                 EnemyTeam = BlueTeam
-                            else
-                                print("[DEBUG] Could not find player name in Red or Blue team frames.")
                             end
 
-                            -- 2. Find Enemy Target
                             local TargetRoot = nil
                             local TargetChar = nil
 
@@ -306,11 +457,8 @@ spawn(function()
                                         end
                                     end
                                 end
-                            else
-                                print("[DEBUG] No Enemy Team Found")
                             end
 
-                            -- 3. Execute Attack Logic
                             if TargetRoot and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
                                 local MyRoot = LocalPlayer.Character.HumanoidRootPart
                                 local Distance = (MyRoot.Position - TargetRoot.Position).Magnitude
@@ -318,48 +466,44 @@ spawn(function()
                                 if Distance <= 550 then
                                     StatusLabel:Set("Attacking: " .. TargetChar.Name)
                                     
-                                    -- Teleport (Lerp) behind the enemy
                                     MyRoot.CFrame = TargetRoot.CFrame * CFrame.new(0, 0, 3) 
                                     MyRoot.CFrame = CFrame.new(MyRoot.Position, TargetRoot.Position)
                                     
-                                    -- Hold M1 (Attack)
                                     VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true, game, 1)
                                 else
                                     StatusLabel:Set("Target too far (>550)")
-                                    -- Release Inputs
                                     VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 1)
                                 end
                             else
                                 StatusLabel:Set("Searching for targets...")
-                                -- Release Inputs
                                 VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 1)
                             end
-                        else
-                            print("[DEBUG] CustomLeaderboard not found or structure changed")
                         end
                     end
-                else
-                    print("[DEBUG] FarmVariant is unknown: ", tostring(FarmVariant))
                 end
                 wait(0.1) 
+            else
+                -- Not in fight phase
             end
 
             StatusLabel:Set("Mode: " .. FarmMode .. " | Checking...")
         else
             StatusLabel:Set("Status: Disabled")
+            ProgressLabel:Set("Progress: None")
+            if currentCharacter then
+                stopTrackingSession()
+            end
         end
         wait(0.1)
     end
 end)
 
-
 local GoldFarm = MainTab:CreateSection("Gold Skin Farm")
 
-local UnlockedCharacters = {} -- array of ImageButtons
-local seen = {}              -- [ImageButton] = true
+local UnlockedCharacters = {}
+local seen = {}
 local scanning = false
 
--- Create the dropdown first so we can refresh it later
 local CharacterDropdown = MainTab:CreateDropdown({
 	Name = "Character Selection",
 	Options = {"None"},
@@ -367,9 +511,13 @@ local CharacterDropdown = MainTab:CreateDropdown({
 	MultipleOptions = false,
 	Flag = "GoldCharacter",
 	Callback = function(Options)
-		local choice = (typeof(Options) == "table" and Options[1]) or Options
+		local choice = (type(Options) == "table" and Options[1]) or Options
+		local oldChoice = GoldCharacterName
 		GoldCharacterName = choice or "None"
-		print("Selected " .. tostring(GoldCharacterName) .. " to get Gold Skin!")
+		
+		if oldChoice ~= GoldCharacterName and currentCharacter then
+			stopTrackingSession()
+		end
 	end,
 })
 
@@ -382,18 +530,7 @@ local function refreshDropdownFromUnlocked()
 		end
 	end
 
-	-- Rayfield dropdown refresh
 	CharacterDropdown:Refresh(opts, true)
-end
-
-local function dumpUnlocked()
-	local names = {}
-	for _, btn in ipairs(UnlockedCharacters) do
-		if btn and btn.Parent then
-			table.insert(names, btn.Name)
-		end
-	end
-	print("Unlocked:", #names, table.concat(names, ", "))
 end
 
 local AltToggle = MainTab:CreateToggle({
@@ -404,11 +541,8 @@ local AltToggle = MainTab:CreateToggle({
 		scanning = Value
 
 		if not scanning then
-			print("Reading Disabled")
 			return
 		end
-
-		print("Reading Enabled")
 
 		task.spawn(function()
 			while scanning do
@@ -432,7 +566,6 @@ local AltToggle = MainTab:CreateToggle({
 
 				if addedSomething then
 					refreshDropdownFromUnlocked()
-					dumpUnlocked()
 				end
 
 				task.wait(1)
@@ -440,3 +573,40 @@ local AltToggle = MainTab:CreateToggle({
 		end)
 	end,
 })
+
+-- Clean up old file without user ID
+spawn(function()
+    wait(2) -- Wait a bit after game starts
+    local oldFile = "ABAniumFolder/CharacterData.json"
+    if isfile(oldFile) then
+        -- Load old data and merge with current
+        local success, oldData = pcall(function()
+            return HttpService:JSONDecode(readfile(oldFile))
+        end)
+        
+        if success and oldData and #oldData > 0 then
+            -- Merge old data into current data
+            for _, oldChar in ipairs(oldData) do
+                local found = false
+                for _, currentChar in ipairs(characterData) do
+                    if currentChar.Name == oldChar.Name then
+                        -- Use the higher values
+                        currentChar.Points = math.max(currentChar.Points or 0, oldChar.Points or 0)
+                        currentChar.Time = math.max(currentChar.Time or 0, oldChar.Time or 0)
+                        found = true
+                        break
+                    end
+                end
+                if not found then
+                    table.insert(characterData, oldChar)
+                end
+            end
+            saveCharacterData()
+        end
+        
+        -- Delete old file
+        pcall(function()
+            delfile(oldFile)
+        end)
+    end
+end)
