@@ -25,6 +25,9 @@ local Window = Rayfield:CreateWindow({
 -- Create Main Tab
 local MainTab = Window:CreateTab("Auto Farm", 4483362458)
 
+-- Create General Tab
+local GeneralTab = Window:CreateTab("General", 4483362458)
+
 -- Toggles Section
 local MainSection = MainTab:CreateSection("Farm Mode Selection")
 
@@ -56,15 +59,22 @@ local DATA_FILE = "ABAniumFolder/CharacterData_" .. tostring(LocalPlayer.UserId)
 
 -- Function to load character data
 local function loadCharacterData()
+    pcall(function()
+        makefolder("ABAniumFolder")
+    end)
+    
     if isfile(DATA_FILE) then
         local success, data = pcall(function()
             return HttpService:JSONDecode(readfile(DATA_FILE))
         end)
         if success and data then
             characterData = data
+        else
+            characterData = {}
         end
+    else
+        characterData = {}
     end
-    characterData = characterData or {}
 end
 
 -- Function to save character data
@@ -101,12 +111,29 @@ local function updateCharacterTracking(characterName, pointsToAdd, timeToAdd)
     saveCharacterData()
 end
 
+-- Function to get character progress
+local function getCharacterProgress(characterName)
+    for _, charData in ipairs(characterData) do
+        if charData.Name == characterName then
+            return {
+                Points = charData.Points or 0,
+                Time = charData.Time or 0
+            }
+        end
+    end
+    return {Points = 0, Time = 0}
+end
+
 -- Function to start tracking session
 local function startTrackingSession(characterName)
     if FarmVariant == "Gold" and FarmMode == "Main" and characterName ~= "None" then
         currentCharacter = characterName
         sessionStartTime = tick()
         totalPointsThisSession = 0
+        
+        -- Load existing progress for display
+        local progress = getCharacterProgress(characterName)
+        totalPointsThisSession = progress.Points
         
         -- Get initial points value
         local leaderstats = LocalPlayer:FindFirstChild("leaderstats")
@@ -158,6 +185,31 @@ local FarmFor = MainTab:CreateDropdown({
     end,
 })
 
+-- =========================================================
+-- FPS ENFORCER (re-applies cap every 5s while farming)
+-- =========================================================
+local FPS_FARM = 20
+local FPS_NORMAL = 200
+local _fpsLoopStarted = _fpsLoopStarted or false
+
+if not _fpsLoopStarted then
+    _fpsLoopStarted = true
+
+    task.spawn(function()
+        while true do
+            task.wait(5)
+
+            if FarmEnabled then
+                -- Keep farm cap locked
+                pcall(function()
+                    setfpscap(FPS_FARM)
+                end)
+            end
+        end
+    end)
+end
+
+
 -- Create Main Toggle
 local MainToggle = MainTab:CreateToggle({
     Name = "Main Account Mode",
@@ -171,7 +223,6 @@ local MainToggle = MainTab:CreateToggle({
             
             -- Initialize data only once
             if not isInitialized then
-                makefolder("ABAniumFolder")
                 loadCharacterData()
                 isInitialized = true
             end
@@ -233,7 +284,6 @@ local function PressButton(button)
 end
 
 local GoldCharacterName = "None"
-local AnchorExpiry = 0
 local lastTimeUpdate = tick()
 
 -- Points and time monitoring coroutine
@@ -253,12 +303,19 @@ spawn(function()
                 local pointsStat = leaderstats:FindFirstChild("Points")
                 if pointsStat then
                     local currentPoints = pointsStat.Value
-                    local pointsDiff = currentPoints - lastPointsValue
                     
-                    -- Only add positive differences (points earned)
-                    if pointsDiff > 0 then
-                        updateCharacterTracking(currentCharacter, pointsDiff, 0)
-                        totalPointsThisSession = totalPointsThisSession + pointsDiff
+                    -- Handle points reset (new round)
+                    if currentPoints < lastPointsValue and lastPointsValue > 100 then
+                        -- Round ended, add the points from last round
+                        updateCharacterTracking(currentCharacter, lastPointsValue, 0)
+                        totalPointsThisSession = totalPointsThisSession + lastPointsValue
+                    else
+                        -- Points increased during round
+                        local pointsDiff = currentPoints - lastPointsValue
+                        if pointsDiff > 0 then
+                            updateCharacterTracking(currentCharacter, pointsDiff, 0)
+                            totalPointsThisSession = totalPointsThisSession + pointsDiff
+                        end
                     end
                     
                     lastPointsValue = currentPoints
@@ -268,6 +325,102 @@ spawn(function()
         wait(1)
     end
 end)
+
+local LastHit = 0
+local AnchorUntil = 0
+
+-- Set up health monitoring using HealthChanged event
+local function setupHealthMonitoring(character)
+    if character then
+        local humanoid = character:FindFirstChild("Humanoid")
+        if humanoid then
+            -- Store previous health to detect damage
+            local previousHealth = humanoid.Health
+            
+            -- Use HealthChanged event which fires when health changes
+            humanoid.HealthChanged:Connect(function(newHealth)
+                -- Only track damage in Alt Gold mode
+                if FarmEnabled and FarmMode == "Alt" and FarmVariant == "Gold" then
+                    if newHealth < previousHealth then
+                        -- Health decreased, meaning damage was taken
+                        -- Extend anchor timer by 3 seconds from now
+                        AnchorUntil = tick() + 3
+                        LastHit = tick()
+                        
+                        -- Anchor immediately
+                        local hrp = character:FindFirstChild("HumanoidRootPart")
+                        if hrp then
+                            hrp.Anchored = true
+                        end
+                    end
+                end
+                previousHealth = newHealth
+            end)
+        end
+    end
+end
+
+-- Monitor when character changes (for respawns)
+LocalPlayer.CharacterAdded:Connect(function(character)
+    wait(0.5) -- Wait for humanoid to load
+    setupHealthMonitoring(character)
+    
+    -- Reset anchor timer when new character spawns
+    AnchorUntil = 0
+    LastHit = 0
+end)
+
+-- Initialize for current character
+if LocalPlayer.Character then
+    setupHealthMonitoring(LocalPlayer.Character)
+end
+
+-- Separate loop to handle anchoring based on timer
+spawn(function()
+    while true do
+        wait(0.1)
+        
+        if FarmEnabled and FarmMode == "Alt" and FarmVariant == "Gold" then
+            local character = LocalPlayer.Character
+            if character then
+                local hrp = character:FindFirstChild("HumanoidRootPart")
+                local humanoid = character:FindFirstChild("Humanoid")
+                
+                if hrp and humanoid and humanoid.Health > 0 then
+                    local currentTime = tick()
+                    
+                    if currentTime < AnchorUntil then
+                        -- Still within anchor period
+                        if not hrp.Anchored then
+                            hrp.Anchored = true
+                        end
+                        local timeLeft = math.ceil(AnchorUntil - currentTime)
+                        StatusLabel:Set("Phase: Anchored (" .. timeLeft .. "s left)")
+                    else
+                        -- Anchor period expired
+                        if hrp.Anchored then
+                            hrp.Anchored = false
+                        end
+                    end
+                end
+            end
+        end
+    end
+end)
+
+-- Lerp function for smooth movement
+local function lerpTo(hrp, targetCFrame, duration)
+    local startCFrame = hrp.CFrame
+    local startTime = tick()
+    
+    while tick() - startTime < duration do
+        local alpha = (tick() - startTime) / duration
+        hrp.CFrame = startCFrame:Lerp(targetCFrame, alpha)
+        wait()
+    end
+    
+    hrp.CFrame = targetCFrame
+end
 
 -- CONSTANT CHECK LOOP
 spawn(function()
@@ -365,29 +518,11 @@ spawn(function()
                 
                 elseif FarmVariant == "Gold" then
                     if FarmMode == "Alt" then
-                        local character = LocalPlayer.Character
-                        local humanoid = character and character:FindFirstChild("Humanoid")
-                        local hrp = character and character:FindFirstChild("HumanoidRootPart")
-
-                        if hrp and humanoid and humanoid.Health > 0 then
-                            AnchorExpiry = tick() + 1
-                            
-                            if not hrp.Anchored then
-                                hrp.Anchored = true
-                                StatusLabel:Set("Phase: Anchored (Alt)")
-                                
-                                task.spawn(function()
-                                    while hrp and hrp.Parent and hrp.Anchored do
-                                        if tick() > AnchorExpiry then
-                                            hrp.Anchored = false
-                                            break
-                                        end
-                                        task.wait(0.1)
-                                    end
-                                end)
-                            end
+                        -- Alt anchoring is now handled by the separate loop above
+                        -- This section just needs to exist but doesn't need the old logic
+                        if tick() >= AnchorUntil then
+                            StatusLabel:Set("Phase: Idle (Alt)")
                         end
-
                     else
                         -- Start tracking session if not already tracking
                         if GoldCharacterName ~= "None" and not currentCharacter then
@@ -396,19 +531,14 @@ spawn(function()
                         
                         -- Update progress display
                         if currentCharacter then
-                            -- Find character data
-                            local charProgress = {Points = 0, Time = 0}
-                            for _, charData in ipairs(characterData) do
-                                if charData.Name == currentCharacter then
-                                    charProgress = charData
-                                    break
-                                end
-                            end
+                            -- Get current character progress
+                            local charProgress = getCharacterProgress(currentCharacter)
                             
+                            -- Calculate percentages
                             local pointsPercent = math.min(100, math.floor((charProgress.Points / 21000) * 100))
                             local timePercent = math.min(100, math.floor((charProgress.Time / 10800) * 100))
                             
-                            local sessionTime = sessionStartTime and (tick() - sessionStartTime) or 0
+                            -- Format time
                             local totalHours = math.floor(charProgress.Time / 3600)
                             local totalMinutes = math.floor((charProgress.Time % 3600) / 60)
                             local totalSeconds = math.floor(charProgress.Time % 60)
@@ -466,8 +596,14 @@ spawn(function()
                                 if Distance <= 550 then
                                     StatusLabel:Set("Attacking: " .. TargetChar.Name)
                                     
-                                    MyRoot.CFrame = TargetRoot.CFrame * CFrame.new(0, 0, 3) 
-                                    MyRoot.CFrame = CFrame.new(MyRoot.Position, TargetRoot.Position)
+                                    -- FIXED: Changed from instant teleport to lerp
+                                    local targetCFrame = TargetRoot.CFrame * CFrame.new(0, 0, 3)
+                                    targetCFrame = CFrame.new(targetCFrame.Position, TargetRoot.Position)
+                                    
+                                    -- Lerp to target over 0.5 seconds for smooth movement
+                                    spawn(function()
+                                        lerpTo(MyRoot, targetCFrame, 0.5)
+                                    end)
                                     
                                     VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true, game, 1)
                                 else
@@ -499,6 +635,76 @@ spawn(function()
 end)
 
 local GoldFarm = MainTab:CreateSection("Gold Skin Farm")
+
+-- =========================================================
+-- NANAMI MACRO SYSTEM
+-- =========================================================
+local RunService = game:GetService("RunService")
+local Live = workspace:WaitForChild("Live")
+
+local NanamiEnabled = false
+local lastClickTime = 0
+local clickCooldown = 0.7
+
+local function clickMouse()
+    local currentTime = tick()
+    if currentTime - lastClickTime >= clickCooldown then
+        VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true, game, 1)
+        task.wait(0.01)
+        VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 1)
+        lastClickTime = currentTime
+    end
+end
+
+-- General Tab Section
+local GeneralSection = GeneralTab:CreateSection("Macros")
+
+local NanamiToggle = GeneralTab:CreateToggle({
+    Name = "Nanami Macro",
+    CurrentValue = false,
+    Flag = "NanamiMacro",
+    Callback = function(Value)
+        NanamiEnabled = Value
+        
+        if Value then
+            -- Create the connection when enabled
+            _G.NanamiCutConnection = RunService.Heartbeat:Connect(function()
+                if not NanamiEnabled then return end
+                
+                for _, model in pairs(Live:GetChildren()) do
+                    -- Check for Nanami Cut GUI
+                    local humanoidRootPart = model:FindFirstChild("HumanoidRootPart")
+                    if humanoidRootPart then
+                        local nanamiGUI = humanoidRootPart:FindFirstChild("NanamiCutGUI")
+                        if nanamiGUI then
+                            local mainBar = nanamiGUI:FindFirstChild("MainBar")
+                            if mainBar then
+                                local cutter = mainBar:FindFirstChild("Cutter")
+                                local goal = mainBar:FindFirstChild("Goal")
+                                
+                                if cutter and goal then
+                                    local cutterPos = cutter.Position.X.Scale
+                                    local goalPos = goal.Position.X.Scale
+                                    
+                                    -- Check if cutter is within 0.05 range of goal (tolerance for timing)
+                                    if math.abs(cutterPos - goalPos) <= 0.01 then
+                                        clickMouse()
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+            end)
+        else
+            -- Disconnect when disabled
+            if _G.NanamiCutConnection then
+                _G.NanamiCutConnection:Disconnect()
+                _G.NanamiCutConnection = nil
+            end
+        end
+    end,
+})
 
 local UnlockedCharacters = {}
 local seen = {}
@@ -533,7 +739,7 @@ local function refreshDropdownFromUnlocked()
 	CharacterDropdown:Refresh(opts, true)
 end
 
-local AltToggle = MainTab:CreateToggle({
+local ScannerToggle = MainTab:CreateToggle({
 	Name = "Unlocked Character Scanner",
 	CurrentValue = false,
 	Flag = "UnlockedScanning",
@@ -574,9 +780,19 @@ local AltToggle = MainTab:CreateToggle({
 	end,
 })
 
+-- Auto-save data every 2 minutes as backup
+spawn(function()
+    while true do
+        wait(120)
+        if #characterData > 0 then
+            saveCharacterData()
+        end
+    end
+end)
+
 -- Clean up old file without user ID
 spawn(function()
-    wait(2) -- Wait a bit after game starts
+    wait(5) -- Wait a bit after game starts
     local oldFile = "ABAniumFolder/CharacterData.json"
     if isfile(oldFile) then
         -- Load old data and merge with current
