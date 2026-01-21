@@ -3,9 +3,14 @@ local player = game:GetService("Players").LocalPlayer
 
 -- List of allowed user IDs
 local ALLOWED_USER_IDS = {
-    388174082,
-    9057967529,
-    10359276558
+    388174082, --niko
+    9057967529, --niko
+    10359276558, --Abaworstgameoat
+    3689033832, --ucansutD
+    4860964524, --Elias_22
+    4860967557, --Elias_23
+    3522060218, --Kenny
+    10332026677, --Kenny
 }
 
 -- Function to check if user is authorized
