@@ -13,6 +13,8 @@ local ALLOWED_USER_IDS = {
     10332026677, --Kenny
 	1025403037, --Noah
 	4028810303, --Noah
+	4856349248, --noah
+	4449229793, --noah
 }
 
 -- Function to check if user is authorized
